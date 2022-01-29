@@ -3,134 +3,92 @@ module karatsuba
 import net
 import time
 
-pub struct Context {
-	unparsed []byte
+pub struct Karatsuba {
 mut:
-	conn             net.TcpConn
-	cached_headers   map[string]string
-	resp_headers     map[string]string
-	arguments        map[string]string
-	cached_multipart map[string]string
-pub:
-	method     Method
-	path       string
-	parameters map[string]string
-	version    string
+	endpoints []Endpoint
 pub mut:
-	code int
-}
-
-// `get_header` finds the wanted header
-// and afterwards caches it, for future use.
-pub fn (mut ctx Context) get_header(name string) ?string {
-	if name in ctx.cached_headers {
-		return ctx.cached_headers[name]
-	}
-
-	mut pointer := 0
-	mut start := 0
-	buffer := ctx.unparsed
-	for pointer + 4 < buffer.len && buffer[pointer..pointer + 4] != '\r\n\r\n'.bytes() {
-		if pointer + 2 < buffer.len && buffer[pointer..pointer + 2] == '\r\n'.bytes() {
-			pointer += 2
-			start = pointer
-		}
-
-		if buffer[pointer] == `:` && buffer[start..pointer] == name.bytes() {
-			pointer += 2
-			start = pointer
-
-			// find the end of the header value
-			for pointer + 1 < buffer.len && buffer[pointer] != `\r` {
-				pointer += 1
-			}
-
-			value := buffer[start..pointer].bytestr()
-			ctx.cached_headers[name] = value
-
-			return value
-		}
-		pointer++
-	}
-
-	return error('karatsuba: header not found.')
-}
-
-pub fn (mut ctx Context) get_multipart(name string) string {
-	content_type := ctx.get_header('Content-Type') or { return 'none' }
-
-	mut pointer := content_type.index_byte(`;`)
-	typ := content_type[..pointer]
-	if typ != 'multipart/form-data' {
-		return 'none'
-	}
-
-	// pointer += content_type[pointer..].index_byte(`=`) + 1
-	// boundary := content_type[pointer..]
-
-	// pointer = ctx.unparsed.bytestr().index('\r\n\r\n') or { 0 } + 4
-	// form_data := ctx.unparsed[pointer..]
-
-	// for pointer + 1 <
-	return 'text'
+	addr string
 }
 
 [inline]
-pub fn (mut ctx Context) add_header(name string, value string) {
-	ctx.resp_headers[name] = value
-}
-
-fn (ctx Context) status_string() string {
-	msg := match ctx.code {
-		100 { '100 Continue' }
-		101 { '101 Switching Protocols' }
-		200 { '200 OK' }
-		201 { '201 Created' }
-		202 { '202 Accepted' }
-		301 { '301 Moved Permanently' }
-		400 { '400 Bad Request' }
-		401 { '401 Unauthorized' }
-		403 { '403 Forbidden' }
-		404 { '404 Not Found' }
-		405 { '405 Method Not Allowed' }
-		408 { '408 Request Timeout' }
-		500 { '500 Internal Server Error' }
-		501 { '501 Not Implemented' }
-		502 { '502 Bad Gateway' }
-		else { '-' }
+pub fn (mut k Karatsuba) add_endpoint(method Method, addr string, func fn (mut ctx Context) []byte) {
+	k.endpoints << Endpoint{
+		path: addr
+		func: func
+		method: method
 	}
-	return msg
 }
 
-pub fn (mut ctx Context) text(s string, code int) []byte {
-	ctx.add_header('Content-Type', 'text/plain')
-	ctx.code = code
-	return s.bytes()
-}
-
-pub fn (mut ctx Context) json(s string, code int) []byte {
-	ctx.add_header('Content-Type', 'application/json; charset=utf-8')
-	ctx.code = code
-	return s.bytes()
-}
-
-pub fn (mut ctx Context) send(content []byte) {
-	mut buf := []byte{}
-
-	buf << '$ctx.version $ctx.status_string()\r\n'.bytes()
-
-	// add required headers
-	ctx.add_header('Content-Length', content.len.str())
-	ctx.add_header('X-Powered-By', 'Karatsuba/1.0')
-	ctx.add_header('Date', time.now().str())
-	ctx.add_header('Connection', 'keep-alive')
-
-	for key, value in ctx.resp_headers {
-		buf << '$key: $value\r\n'.bytes()
+[inline]
+pub fn (k Karatsuba) get_endpoint(path string, method Method) ?Endpoint {
+	for endpoint in k.endpoints {
+		if endpoint.path == path {
+			if endpoint.method != method {
+				return error_with_code('Method not allowed', 408)
+			}
+			return endpoint
+		}
 	}
 
-	buf << '\r\n'.bytes()
-	buf << content
+	return error_with_code('Not found.', 404)
+}
 
-	ctx.conn.write(buf) or {}
+pub fn (k &Karatsuba) run() {
+	mut listener := net.listen_tcp(.ip, k.addr) or { panic(err) }
+
+	defer {
+		listener.close() or {}
+	}
+
+	println('Listening on $k.addr')
+
+	for {
+		mut conn := listener.accept() or {
+			println('Unable to get connection')
+			continue
+		}
+
+		// maybe make my own as this doesn't
+		// read it properly 40% of the times.
+		mut buf := []byte{len: 2048}
+		end := conn.read(mut buf) or {
+			println('Unable to read the requests body.')
+			conn.close() or {}
+			continue
+		}
+
+		mut sw := time.new_stopwatch()
+		sw.start()
+
+		parsed := parse_request(buf[..end]) or {
+			conn.write(('HTTP/1.1 400 Bad Request\r\n' + 'content-type: text/html\r\n' +
+				'content-length: ${err.msg.len + 9}\r\n\r\n' + '<h1>$err.msg</h1>').bytes()) or {}
+			conn.close() or {}
+			continue
+		}
+
+		handler := k.get_endpoint(parsed.path, get_method(parsed.method)) or {
+			conn.write(('$parsed.version ${status_string(err.code)}\r\n' +
+				'content-type: text/html\r\n' + 'content-length: ${err.msg.len + 9}\r\n\r\n' +
+				'<h1>$err.msg</h1>').bytes()) or {}
+			conn.close() or {}
+			continue
+		}
+
+		mut ctx := &Context{
+			conn: conn
+			parameters: parsed.args
+			unparsed: parsed.unparsed
+			path: handler.path
+			method: handler.method
+			version: parsed.version
+		}
+		resp := handler.func(mut ctx)
+
+		sw.stop()
+		println('$ctx.path | $ctx.method.str().to_upper() [$sw.elapsed().microseconds()μs]')
+		
+		ctx.send(resp)
+		conn.close() or {}
+	}
 }

@@ -22,12 +22,15 @@ pub fn (mut k Karatsuba) add_endpoint(method Method, addr string, func fn (mut c
 [inline]
 pub fn (k Karatsuba) get_endpoint(path string, method Method) ?Endpoint {
 	for endpoint in k.endpoints {
-		if endpoint.path == path && endpoint.method == method {
+		if endpoint.path == path {
+			if endpoint.method != method {
+				return error_with_code('Method not allowed', 408)
+			}
 			return endpoint
 		}
 	}
 
-	return error('Not found.')
+	return error_with_code('Not found.', 404)
 }
 
 pub fn (k &Karatsuba) run() {
@@ -47,7 +50,7 @@ pub fn (k &Karatsuba) run() {
 
 		// maybe make my own as this doesn't
 		// read it properly 40% of the times.
-		mut buf := []byte{len: 1024}
+		mut buf := []byte{len: 2048}
 		end := conn.read(mut buf) or {
 			println('Unable to read the requests body.')
 			conn.close() or {}
@@ -65,8 +68,9 @@ pub fn (k &Karatsuba) run() {
 		}
 
 		handler := k.get_endpoint(parsed.path, get_method(parsed.method)) or {
-			conn.write(('$parsed.version 404 Not Found\r\n' + 'content-type: text/html\r\n' +
-				'content-length: ${err.msg.len + 9}\r\n\r\n' + '<h1>$err.msg</h1>').bytes()) or {}
+			conn.write(('$parsed.version ${status_string(err.code)}\r\n' +
+				'content-type: text/html\r\n' + 'content-length: ${err.msg.len + 9}\r\n\r\n' +
+				'<h1>$err.msg</h1>').bytes()) or {}
 			conn.close() or {}
 			continue
 		}
@@ -80,8 +84,11 @@ pub fn (k &Karatsuba) run() {
 			version: parsed.version
 		}
 		resp := handler.func(mut ctx)
-		ctx.send(resp)
 
+		sw.stop()
+		println('$ctx.path | $ctx.method.str().to_upper() [$sw.elapsed().microseconds()μs]')
+		
+		ctx.send(resp)
 		conn.close() or {}
 	}
 }
