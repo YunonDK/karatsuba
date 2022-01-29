@@ -6,7 +6,7 @@ Vores optimiserede HTTP server!
 * [Opbyggelse](#Opbyggelse)
 
 # Mål
-Målet med Karatsuba er at lave en HTTP, der kan parse en request og sende respons tilbage, så hurtigst muligt. 
+Målet med Karatsuba er at skabe en HTTP server, der kan parse en request og sende respons tilbage, så hurtigst muligt. 
 Oven i det, går vi også meget op i sikkerhed. Både brugers og selve serverens.
 
 # Opbyggelse
