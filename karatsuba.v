@@ -10,6 +10,12 @@ pub mut:
 	addr string
 }
 
+pub fn new_karatsuba(addr string) Karatsuba {
+	return Karatsuba{
+		addr: addr
+	}
+}
+
 [inline]
 pub fn (mut k Karatsuba) add_endpoint(method Method, addr string, func fn (mut ctx Context) []byte) {
 	k.endpoints << Endpoint{
@@ -87,7 +93,7 @@ pub fn (k &Karatsuba) run() {
 
 		sw.stop()
 		println('$ctx.path | $ctx.method.str().to_upper() [$sw.elapsed().microseconds()μs]')
-		
+
 		ctx.send(resp)
 		conn.close() or {}
 	}
